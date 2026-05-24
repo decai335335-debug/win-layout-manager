@@ -91,7 +91,7 @@ def bring_to_front(hwnd):
     user32.AttachThreadInput(cur_thread, fg_thread, True)
     user32.SetForegroundWindow(hwnd)
     user32.AttachThreadInput(cur_thread, fg_thread, False)
-    time.sleep(0.8)
+    time.sleep(0.5)
 
 
 def snap_with_win_arrow(hwnd, direction):
@@ -101,7 +101,7 @@ def snap_with_win_arrow(hwnd, direction):
     arrow = 'left' if direction == "left" else 'right'
     print(f"  → 发送 Win + {arrow}...")
     keyboard.send(f'win+{arrow}')
-    time.sleep(0.5)
+    time.sleep(0.1)
 
 
 def snap_with_win_z(hwnd, zone):
@@ -121,13 +121,13 @@ def snap_with_win_z(hwnd, zone):
     # Open Snap Layouts
     print(f"  → 发送 Win + Z...")
     keyboard.send('win+z')
-    time.sleep(2.5)  # Wait for UI to fully appear
+    time.sleep(1.5)  # Wait for UI to fully appear
     
     # Navigate to 3-zone layout (6th item, press Tab 6 times)
     print(f"  → 选择三分栏布局 (Tab x6)...")
     for i in range(6):
         keyboard.send('tab')
-        time.sleep(0.8)
+        time.sleep(0.1)
         print(f"    Tab {i+1}/6")
     
     # Navigate to specific zone within the 3-zone layout

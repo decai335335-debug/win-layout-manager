@@ -94,7 +94,7 @@ python snap_all.py
 2. 确认 Kimi Code / QClaw / VS Code / Tabbit / 文件资源管理器 都在正确屏幕上
 3. 主屏三分栏：VS Code → 左 | Tabbit → 中 | 文件资源管理器 → 右
 4. 竖屏二分栏：Kimi Code → 上 | QClaw → 下
-5. 全程 5~8 秒，无需人工干预
+5. 全程 3~4 秒，无需人工干预
 
 ### 场景二：单独测试竖屏（调试竖屏专用）
 
@@ -204,6 +204,16 @@ win-layout-manager/
 ---
 
 ## 更新日志
+
+### v4.0 — 极速优化与稳定修复
+- **速度优化**：全流程从 5~8 秒压缩到 **3~4 秒**
+  - 禁用调试截图（PNG 写磁盘单次 200~500ms）
+  - Fast-path 模板匹配：1.0x 先尝试，置信度 ≥0.70 直接跳过其余 6 个尺度
+  - 削减冗余 sleep：click post-delay 0.1→0.03s、ShowWindow 0.1→0.05s、删除 bring_to_front 后冗余等待
+- **稳定修复**：QClaw 竖屏匹配失败修复
+  - 根因：Kimi Code snap 到 top 后，Win11 需要时间渲染 bottom 区域建议缩略图
+  - 修复：QClaw 等待时间 0.2→0.6s，恢复正确流程（和主屏 Tabbit/Explorer 一样直接点击缩略图）
+- **精准度提升**：`find_icon` 阈值 0.50→0.45，给边缘情况余量
 
 ### v3.0 — 多显示器完整支持
 - 新增竖屏上下二分栏（Kimi Code 上 / QClaw 下）

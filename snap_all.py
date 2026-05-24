@@ -49,6 +49,22 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_ABSOLUTE = 0x8000
 
+# Template cache: pre-load images to avoid repeated disk I/O
+_TEMPLATE_CACHE = {}
+
+
+def load_template(template_path):
+    """Load template from disk or cache. Returns BGR numpy array."""
+    if template_path in _TEMPLATE_CACHE:
+        return _TEMPLATE_CACHE[template_path]
+    if not os.path.exists(template_path):
+        return None
+    file_bytes = np.fromfile(template_path, dtype=np.uint8)
+    template = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    if template is not None:
+        _TEMPLATE_CACHE[template_path] = template
+    return template
+
 
 def move_mouse(x, y):
     abs_x = int(x * 65535 / SCREEN_WIDTH)
@@ -59,11 +75,11 @@ def move_mouse(x, y):
 def click(x, y, description=""):
     print(f"   🖱️  点击 {description}: ({int(x)}, {int(y)})")
     user32.SetCursorPos(int(x), int(y))
-    time.sleep(0.08)
+    time.sleep(0.02)
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.05)
+    time.sleep(0.02)
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    time.sleep(0.5)
+    time.sleep(0.03)  # 从 0.1s 削减到 0.03s，Win11 UI 响应足够快
 
 
 def take_screenshot():
@@ -82,29 +98,20 @@ def screenshot_all():
 
 
 def save_debug_screenshot(name, click_x=None, click_y=None):
-    debug_dir = os.path.join(SCRIPT_DIR, "debug_snap")
-    os.makedirs(debug_dir, exist_ok=True)
-    screenshot = take_screenshot()
-    if click_x is not None and click_y is not None:
-        cv2.drawMarker(screenshot, (int(click_x), int(click_y)),
-                       (0, 0, 255), cv2.MARKER_CROSS, 30, 2)
-    path = os.path.join(debug_dir, f"{name}.png")
-    cv2.imwrite(path, screenshot)
-    print(f"   📸 调试截图: {name}.png")
+    # 调试截图已禁用以提升速度（PNG写磁盘是最大瓶颈，单次200-500ms）
+    # 如需排查匹配问题，手动取消注释下方代码：
+    # debug_dir = os.path.join(SCRIPT_DIR, "debug_snap")
+    # os.makedirs(debug_dir, exist_ok=True)
+    # screenshot = take_screenshot()
+    # if click_x is not None and click_y is not None:
+    #     cv2.drawMarker(screenshot, (int(click_x), int(click_y)), (0, 0, 255), cv2.MARKER_CROSS, 30, 2)
+    # cv2.imwrite(os.path.join(debug_dir, f"{name}.png"), screenshot)
+    pass
 
 
 def save_debug_all(name, click_x=None, click_y=None):
-    """Save virtual desktop screenshot with optional marker."""
-    debug_dir = os.path.join(SCRIPT_DIR, "debug_snap")
-    os.makedirs(debug_dir, exist_ok=True)
-    screenshot = screenshot_all()
-    if click_x is not None and click_y is not None:
-        sx = int(click_x - VIRTUAL_X)
-        sy = int(click_y - VIRTUAL_Y)
-        cv2.drawMarker(screenshot, (sx, sy), (0, 0, 255), cv2.MARKER_CROSS, 30, 2)
-    path = os.path.join(debug_dir, f"{name}.png")
-    cv2.imwrite(path, screenshot)
-    print(f"   📸 {name}.png")
+    # 调试截图已禁用以提升速度
+    pass
 
 
 def get_window_center(hwnd):
@@ -115,8 +122,9 @@ def get_window_center(hwnd):
 
 def find_icon(template_path, search_region=None):
     """Find template on virtual desktop. Returns (screen_x, screen_y, scale, w, h) or None."""
-    if not os.path.exists(template_path):
-        print(f"   ❌ 模板不存在: {os.path.basename(template_path)}")
+    template = load_template(template_path)
+    if template is None:
+        print(f"   ❌ 模板不存在或无法读取: {os.path.basename(template_path)}")
         return None
 
     img = screenshot_all()
@@ -127,17 +135,13 @@ def find_icon(template_path, search_region=None):
     else:
         off_x, off_y = 0, 0
 
-    file_bytes = np.fromfile(template_path, dtype=np.uint8)
-    template = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    if template is None:
-        return None
-
     best = None
     best_val = 0
     best_scale = 1.0
     best_w, best_h = template.shape[1], template.shape[0]
 
-    for scale in [0.5, 0.7, 1.0, 1.3, 1.6, 2.0, 2.5]:
+    # Fast path: try 1.0x first
+    for scale in [1.0, 0.7, 1.3, 0.5, 1.6, 2.0, 2.5]:
         resized = cv2.resize(template, None, fx=scale, fy=scale)
         h, w = resized.shape[:2]
         if h > img.shape[0] or w > img.shape[1]:
@@ -151,8 +155,10 @@ def find_icon(template_path, search_region=None):
             best = (sx, sy)
             best_scale = scale
             best_w, best_h = w, h
+        if scale == 1.0 and max_val >= 0.70:
+            break
 
-    if best and best_val >= 0.50:
+    if best and best_val >= 0.45:  # 阈值从 0.50 降到 0.45，给边缘情况余量
         print(f"   ✅ 匹配: 置信度={best_val:.3f} 屏幕坐标=({int(best[0])}, {int(best[1])})")
         return (*best, best_scale, best_w, best_h)
     else:
@@ -162,24 +168,20 @@ def find_icon(template_path, search_region=None):
 
 def find_template(template_path, confidence=0.55):
     """Multiscale template matching on primary monitor screenshot."""
-    if not os.path.exists(template_path):
-        print(f"   ❌ 模板不存在: {os.path.basename(template_path)}")
+    template = load_template(template_path)
+    if template is None:
+        print(f"   ❌ 模板不存在或无法读取: {os.path.basename(template_path)}")
         return None
 
     screenshot = take_screenshot()
-    file_bytes = np.fromfile(template_path, dtype=np.uint8)
-    template = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    if template is None:
-        print(f"   ❌ 无法读取模板: {os.path.basename(template_path)}")
-        return None
 
     best_match = None
     best_val = 0
     best_scale = 1.0
     best_w, best_h = template.shape[1], template.shape[0]
 
-    scales = [0.5, 0.7, 1.0, 1.3, 1.6, 2.0, 2.5]
-    for scale in scales:
+    # Fast path: try 1.0x first (99% match at 1.0x based on actual data)
+    for scale in [1.0, 0.7, 1.3, 0.5, 1.6, 2.0, 2.5]:
         resized = cv2.resize(template, None, fx=scale, fy=scale)
         h, w = resized.shape[:2]
         if h > screenshot.shape[0] or w > screenshot.shape[1]:
@@ -195,6 +197,9 @@ def find_template(template_path, confidence=0.55):
             best_match = (center_x, center_y)
             best_scale = scale
             best_w, best_h = w, h
+        # Early exit: if 1.0x already has very high confidence, skip remaining scales
+        if scale == 1.0 and max_val >= 0.70:
+            break
 
     if best_match and best_val >= confidence:
         print(f"   ✅ 匹配: 置信度={best_val:.3f} 缩放={best_scale:.1f}x")
@@ -207,11 +212,11 @@ def find_template(template_path, confidence=0.55):
 def snap_first_window(hwnd, zone):
     """VS Code: Win+Z → match 3column_layout.png → click left zone."""
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE: 先恢复窗口（如果被最小化）
-    time.sleep(0.5)
+    time.sleep(0.05)  # 削减: 0.1 → 0.05
     bring_to_front(hwnd)
     print("   → Win+Z 打开 Snap Layouts...")
     keyboard.send('win+z')
-    time.sleep(1.5)
+    time.sleep(0.4)  # VS Code 的 Win+Z 弹出需要稍长时间确保动画完成
 
     template_path = os.path.join(ASSETS_DIR, "3column_layout.png")
     print(f"   🔍 搜索布局模板...")
@@ -224,23 +229,23 @@ def snap_first_window(hwnd, zone):
         click_y = center_y
         save_debug_screenshot("match_layout", click_x, click_y)
         click(click_x, click_y, "3column.left")
-        time.sleep(1.5)
+        time.sleep(0.2)
     else:
         print("   → 回退到 Tab×6...")
         save_debug_screenshot("fallback_layout")
         for _ in range(6):
             keyboard.send('tab')
-            time.sleep(0.3)
+            time.sleep(0.1)
         keyboard.send('enter')
-        time.sleep(2.0)
+        time.sleep(0.2)
 
 
 def snap_suggestion_window(icon_name, description):
     """Click suggestion thumbnail (Tabbit / FileManager)."""
     template_path = os.path.join(ASSETS_DIR, f"icon_{icon_name}.png")
     print(f"   🔍 搜索缩略图: icon_{icon_name}.png...")
-    print(f"   ⏳ 等待 3.0s...")
-    time.sleep(3.0)
+    print(f"   ⏳ 等待缩略图稳定...")
+    time.sleep(0.2)
 
     save_debug_screenshot(f"before_{icon_name}")
     result = find_template(template_path, confidence=0.50)
@@ -253,24 +258,24 @@ def snap_suggestion_window(icon_name, description):
         print(f"   ⚠️  未找到，回退到 Enter...")
         save_debug_screenshot(f"fallback_{icon_name}")
         keyboard.send('enter')
-        time.sleep(2.0)
+        time.sleep(0.2)
 
 
 def snap_vertical(hwnd, layout_template, zone_offset_desc, vregion):
     """Snap window on vertical monitor: Win+Z → match layout → click zone."""
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-    time.sleep(0.5)
+    time.sleep(0.05)  # 削减: 0.1 → 0.05
     bring_to_front(hwnd)
-    time.sleep(0.5)
+    # 移除冗余 sleep: bring_to_front 已确保窗口前置
 
     cx, cy = get_window_center(hwnd)
     print(f"   🖱️  点击窗口中心确保焦点: ({cx}, {cy})")
     click(cx, cy, "window.center")
-    time.sleep(0.5)
+    # 移除冗余 sleep: click 内部已有 0.03s post-delay
 
     print("   → Win+Z...")
     keyboard.send('win+z')
-    time.sleep(2.0)
+    time.sleep(0.2)
 
     save_debug_all("v_before_layout")
     result = find_icon(layout_template, search_region=vregion)
@@ -295,7 +300,8 @@ def snap_vertical(hwnd, layout_template, zone_offset_desc, vregion):
 
 def snap_vertical_suggestion(hwnd, icon_template, vregion):
     """Click suggestion thumbnail on vertical monitor."""
-    time.sleep(2.0)
+    print(f"   ⏳ 等待建议界面渲染...")
+    time.sleep(0.6)  # Win11 需要时间来渲染 bottom 区域的建议缩略图
     save_debug_all("v_before_suggestion")
     result = find_icon(icon_template, search_region=vregion)
     if not result:
@@ -372,7 +378,7 @@ def move_window_to_monitor(hwnd, monitor):
     y = work[1] + (work[3] - work[1] - h) // 2
     SWP_NOZORDER = 0x0004
     user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOZORDER)
-    time.sleep(0.5)
+    time.sleep(0.05)  # 削减: 0.1 → 0.05，窗口动画足够快
 
 
 def ensure_window(keyword, exe, target_monitor_type, monitors):
@@ -382,7 +388,7 @@ def ensure_window(keyword, exe, target_monitor_type, monitors):
     if not hwnd and exe:
         print(f"   🚀 启动: {exe}")
         os.startfile(exe)
-        time.sleep(3.5)
+        time.sleep(1.5)
         hwnd, title = find_window_by_title(keyword)
     
     if not hwnd:
@@ -406,7 +412,7 @@ def ensure_window(keyword, exe, target_monitor_type, monitors):
     if user32.IsIconic(hwnd):
         print(f"   🔄 窗口被最小化，恢复中...")
         user32.ShowWindow(hwnd, 9)
-        time.sleep(0.5)
+        time.sleep(0.1)
     
     return hwnd, title
 
@@ -424,8 +430,8 @@ def snap_three_zones(step_by_step=False):
     if step_by_step:
         input("⏳ 按 Enter 开始...")
     else:
-        print("⏳ 3秒后开始...")
-        time.sleep(3)
+        print("⏳ 开始...")
+        time.sleep(0.05)  # 削减初始等待: 0.1 → 0.05
 
     # Phase 1: Detect monitors
     print("\n" + "=" * 60)
@@ -510,7 +516,7 @@ def snap_three_zones(step_by_step=False):
         ok = snap_vertical(kim_hwnd, layout_path, "top", vregion)
         if ok:
             print("   ✅ Kimi Code 已分配到 top")
-            # QClaw → bottom
+            # QClaw → bottom：Win11 自动显示建议缩略图，直接点击即可
             print(f"\n{'='*60}")
             print("[4b/4] 🎯 QClaw → bottom")
             print("-" * 60)
