@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Debug screenshots (generated at runtime)
+debug_snap/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc / old files
+misc/
